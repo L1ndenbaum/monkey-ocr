@@ -25,10 +25,10 @@ pillow>=10.0.0
 python-dotenv==1.0.1
 
 # PDF文档处理（docling）
-docling==2.40.0
-docling-core==2.40.0
-docling-ibm-models==3.7.0
-docling-parse==4.1.0
+docling==2.111.0
+docling-core[chunking]==2.86.0
+docling-ibm-models==3.13.3
+docling-parse==7.7.0
 
 # PDF扫描检测和处理
 PyMuPDF==1.25.2
