@@ -138,6 +138,9 @@ prepare_build_args() {
     append_build_arg PIP_INDEX_URL "${PIP_INDEX_URL:-}"
     append_build_arg PIP_EXTRA_INDEX_URL "${PIP_EXTRA_INDEX_URL:-}"
     append_build_arg PIP_TRUSTED_HOST "${PIP_TRUSTED_HOST:-}"
+    append_build_arg APT_MIRROR "${APT_MIRROR:-}"
+    append_build_arg APT_SECURITY_MIRROR "${APT_SECURITY_MIRROR:-}"
+    append_build_arg APT_RETRIES "${APT_RETRIES:-}"
 }
 
 prepare_runtime_args() {
