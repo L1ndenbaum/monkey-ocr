@@ -48,7 +48,9 @@ def setup_models():
             with_tableformer=True,
             with_code_formula=True,
             with_picture_classifier=True,
-            with_easyocr=True,
+            # 本服务的 Docling 管线关闭内置 OCR；扫描 PDF 走外部 OCR API，
+            # 不下载 EasyOCR 模型，避免要求额外 easyocr 可选依赖。
+            with_easyocr=False,
         )
         
         print(f"✅ 模型下载完成: {output_dir}")
@@ -61,9 +63,9 @@ def setup_models():
         
         return True
         
-    except ImportError:
-        print("❌ 无法导入docling，请先安装依赖:")
-        print("   pip install -r requirements.txt")
+    except ImportError as e:
+        print(f"❌ 导入docling或其可选依赖失败: {e}")
+        print("   请先确认依赖已安装: pip install -r requirements.txt")
         return False
     except Exception as e:
         print(f"❌ 模型下载失败: {e}")
