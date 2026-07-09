@@ -59,6 +59,7 @@ logs/
 .env
 .env.local
 .env.production
+.env.build
 
 # Temporary files
 *.tmp
