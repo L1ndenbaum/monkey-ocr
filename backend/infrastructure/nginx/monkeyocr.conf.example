@@ -1,0 +1,101 @@
+upstream monkeyocr_gateway {
+    server 127.0.0.1:13000;
+    keepalive 32;
+}
+
+upstream monkeyocr_frontend {
+    server 127.0.0.1:13002;
+    keepalive 8;
+}
+
+server {
+    listen 80;
+    server_name ocr.example.com;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name ocr.example.com;
+
+    ssl_certificate /etc/letsencrypt/live/ocr.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/ocr.example.com/privkey.pem;
+
+    # Keep the edge ceiling above the gateway's 1 MiB JSON limit. Oversized
+    # edge requests are translated into the same business envelope instead of
+    # leaking Nginx's HTTP 413 response.
+    client_max_body_size 2m;
+    error_page 413 = @payload_too_large;
+    error_page 500 = @transport_internal;
+    error_page 502 = @transport_bad_gateway;
+    error_page 504 = @transport_gateway_timeout;
+
+    location @payload_too_large {
+        default_type application/json;
+        return 200 '{"internal_code":20005,"message":"请求体过大","data":null,"timestamp":"$time_iso8601","request_id":"$request_id","error_reason":"upload_file_too_large"}';
+    }
+
+    location @transport_internal {
+        internal;
+        default_type application/json;
+        return 500 '{"internal_code":90000,"message":"服务内部错误","data":null,"timestamp":"$time_iso8601","request_id":"$request_id","error_reason":"transport_internal_error"}';
+    }
+
+    location @transport_bad_gateway {
+        internal;
+        default_type application/json;
+        return 502 '{"internal_code":90002,"message":"网关上游不可用","data":null,"timestamp":"$time_iso8601","request_id":"$request_id","error_reason":"transport_bad_gateway"}';
+    }
+
+    location @transport_gateway_timeout {
+        internal;
+        default_type application/json;
+        return 504 '{"internal_code":90004,"message":"网关上游超时","data":null,"timestamp":"$time_iso8601","request_id":"$request_id","error_reason":"transport_gateway_timeout"}';
+    }
+
+    location /v1/ {
+        proxy_intercept_errors on;
+        proxy_pass http://monkeyocr_gateway;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Request-ID $request_id;
+        proxy_read_timeout 900s;
+        proxy_send_timeout 900s;
+    }
+
+    location ~ ^/v1/jobs/[^/]+/events$ {
+        proxy_intercept_errors on;
+        proxy_pass http://monkeyocr_gateway;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Request-ID $request_id;
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 1h;
+        add_header X-Accel-Buffering no;
+    }
+
+    location /health/ {
+        proxy_intercept_errors on;
+        proxy_pass http://monkeyocr_gateway;
+        proxy_set_header X-Request-ID $request_id;
+    }
+
+    location = /health {
+        proxy_intercept_errors on;
+        proxy_pass http://monkeyocr_gateway;
+        proxy_set_header X-Request-ID $request_id;
+    }
+
+    location / {
+        proxy_pass http://monkeyocr_frontend;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+    }
+}

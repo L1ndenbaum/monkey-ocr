@@ -1,0 +1,269 @@
+x-python-build-args: &python-build-args
+  HTTP_PROXY: ${BUILD_HTTP_PROXY:-}
+  HTTPS_PROXY: ${BUILD_HTTPS_PROXY:-}
+  NO_PROXY: ${BUILD_NO_PROXY:-}
+  http_proxy: ${BUILD_HTTP_PROXY:-}
+  https_proxy: ${BUILD_HTTPS_PROXY:-}
+  no_proxy: ${BUILD_NO_PROXY:-}
+  PIP_INDEX_URL: ${BUILD_PYPI_INDEX_URL:-https://pypi.org/simple}
+
+x-go-build-args: &go-build-args
+  HTTP_PROXY: ${BUILD_HTTP_PROXY:-}
+  HTTPS_PROXY: ${BUILD_HTTPS_PROXY:-}
+  NO_PROXY: ${BUILD_NO_PROXY:-}
+  http_proxy: ${BUILD_HTTP_PROXY:-}
+  https_proxy: ${BUILD_HTTPS_PROXY:-}
+  no_proxy: ${BUILD_NO_PROXY:-}
+  GOPROXY: ${BUILD_GOPROXY:-https://proxy.golang.org,direct}
+  GOSUMDB: ${BUILD_GOSUMDB:-sum.golang.org}
+
+x-node-build-args: &node-build-args
+  HTTP_PROXY: ${BUILD_HTTP_PROXY:-}
+  HTTPS_PROXY: ${BUILD_HTTPS_PROXY:-}
+  NO_PROXY: ${BUILD_NO_PROXY:-}
+  http_proxy: ${BUILD_HTTP_PROXY:-}
+  https_proxy: ${BUILD_HTTPS_PROXY:-}
+  no_proxy: ${BUILD_NO_PROXY:-}
+
+services:
+  sandbox:
+    build:
+      context: ../../../..
+      dockerfile: infrastructure/docker/sandbox/Dockerfile
+      args: *python-build-args
+    image: ${SANDBOX_IMAGE:-monkeyocr-sandbox:production}
+    container_name: monkeyocr-sandbox
+    environment:
+      SANDBOX_EXCHANGE_DIR: /exchange
+      SANDBOX_POLL_INTERVAL_SECONDS: ${SANDBOX_POLL_INTERVAL_SECONDS:-0.1}
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    cpus: ${SANDBOX_CPU_LIMIT:-2}
+    mem_limit: ${SANDBOX_MEMORY_LIMIT:-4g}
+    pids_limit: ${SANDBOX_PIDS_LIMIT:-128}
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=${SANDBOX_TMPFS_SIZE:-256m}"]
+    volumes: [monkeyocr_sandbox_exchange:/exchange]
+    restart: unless-stopped
+
+  clickhouse-migrate:
+    build:
+      context: ../../../..
+      dockerfile: infrastructure/clickhouse/Dockerfile.migrate
+    image: ${CLICKHOUSE_MIGRATE_IMAGE:-monkeyocr-clickhouse-migrate:production}
+    container_name: monkeyocr-clickhouse-migrate
+    env_file: [../../../../dotenv/production/.env.clickhouse]
+    network_mode: host
+    restart: "no"
+
+  migrate:
+    build:
+      context: ../../../..
+      dockerfile: infrastructure/docker/backend/Dockerfile.production
+      args: *python-build-args
+    image: ${BACKEND_IMAGE:-monkeyocr-backend:production}
+    command: ["alembic", "-c", "alembic.ini", "upgrade", "head"]
+    env_file: [../../../../dotenv/production/.env.database]
+    network_mode: host
+    restart: "no"
+
+  kafka-init:
+    image: ${KAFKA_INIT_IMAGE:-apache/kafka:4.2.0}
+    container_name: monkeyocr-kafka-init
+    env_file: [../../../../dotenv/production/.env.kafka, ../../../../dotenv/production/.env.logging]
+    network_mode: host
+    command:
+      - sh
+      - -c
+      - >-
+        for topic in
+        "$${OCR_JOB_TOPIC}"
+        "$${OCR_JOB_DLQ_TOPIC}"
+        "$${LOGGING_KAFKA_TOPIC}"; do
+          /opt/kafka/bin/kafka-topics.sh --bootstrap-server "$${KAFKA_BROKERS}"
+          --create --if-not-exists --topic "$$topic"
+          --partitions "$${KAFKA_TOPIC_PARTITIONS}"
+          --replication-factor "$${KAFKA_TOPIC_REPLICATION_FACTOR:-1}" || exit 1;
+        done
+    restart: "no"
+
+  storage-service:
+    build:
+      context: ../../../../services
+      dockerfile: storage-service/Dockerfile.production
+      args: *go-build-args
+    image: ${STORAGE_SERVICE_IMAGE:-monkeyocr-storage-service:production}
+    container_name: monkeyocr-storage-service
+    env_file: [../../../../dotenv/production/.env.storage]
+    environment:
+      STORAGE_SERVICE_ADDR: 127.0.0.1:${STORAGE_SERVICE_PORT:-13003}
+    network_mode: host
+    restart: unless-stopped
+
+  logging-service:
+    build:
+      context: ../../../../services
+      dockerfile: logging-service/Dockerfile.production
+      args: *go-build-args
+    image: ${LOGGING_SERVICE_IMAGE:-monkeyocr-logging-service:production}
+    container_name: monkeyocr-logging-service
+    command: ["monkeyocr-logging-service"]
+    env_file: [../../../../dotenv/production/.env.logging]
+    environment:
+      LOGGING_SERVICE_ADDR: 127.0.0.1:${LOGGING_SERVICE_PORT:-13004}
+    network_mode: host
+    volumes: [monkeyocr_logging_data:/var/lib/logging-service]
+    depends_on:
+      kafka-init: {condition: service_completed_successfully}
+    restart: unless-stopped
+
+  clickhouse-writer:
+    image: ${LOGGING_SERVICE_IMAGE:-monkeyocr-logging-service:production}
+    container_name: monkeyocr-clickhouse-writer
+    command: ["monkeyocr-clickhouse-writer"]
+    env_file: [../../../../dotenv/production/.env.logging, ../../../../dotenv/production/.env.clickhouse]
+    network_mode: host
+    depends_on:
+      clickhouse-migrate: {condition: service_completed_successfully}
+      kafka-init: {condition: service_completed_successfully}
+      logging-service: {condition: service_started}
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ../../../..
+      dockerfile: infrastructure/docker/backend/Dockerfile.production
+      args: *python-build-args
+    image: ${BACKEND_IMAGE:-monkeyocr-backend:production}
+    container_name: monkeyocr-backend
+    env_file:
+      - ../../../../dotenv/production/.env.app
+      - ../../../../dotenv/production/.env.database
+      - ../../../../dotenv/production/.env.kafka
+      - ../../../../dotenv/production/.env.engine
+      - ../../../../dotenv/production/.env.auth
+    environment:
+      BACKEND_HOST: 127.0.0.1
+      BACKEND_PORT: ${BACKEND_PORT:-13001}
+      STORAGE_SERVICE_URL: http://127.0.0.1:${STORAGE_SERVICE_PORT:-13003}
+      STORAGE_SERVICE_TOKEN: ${STORAGE_SERVICE_TOKEN}
+      DOCUMENT_STORAGE_BUCKET: ${DOCUMENT_STORAGE_BUCKET:-monkeyocr-documents}
+      PRESIGNED_URL_TTL_SECONDS: ${PRESIGNED_URL_TTL_SECONDS:-900}
+      MULTIPART_PART_SIZE_BYTES: ${MULTIPART_PART_SIZE_BYTES:-8388608}
+      UPLOAD_SESSION_TTL_SECONDS: ${UPLOAD_SESSION_TTL_SECONDS:-3600}
+      MAX_DOCUMENT_PAGES: ${MAX_DOCUMENT_PAGES:-500}
+      MAX_IMAGE_PIXELS: ${MAX_IMAGE_PIXELS:-100000000}
+      PDF_RENDER_DPI: ${PDF_RENDER_DPI:-180}
+      LOGGING_SERVICE_URL: http://127.0.0.1:${LOGGING_SERVICE_PORT:-13004}
+      LOGGING_SERVICE_TOKEN: ${LOGGING_SERVICE_TOKEN}
+      LOGGING_SERVICE_NAME: ${LOGGING_SERVICE_NAME:-monkeyocr-backend}
+      LOGGING_SERVICE_TIMEOUT_SECONDS: ${LOGGING_SERVICE_TIMEOUT_SECONDS:-2}
+      OCR_ENGINE_URL: ${OCR_ENGINE_URL:-http://127.0.0.1:${HPS_API_PORT:-13005}}
+    network_mode: host
+    volumes: [monkeyocr_sandbox_exchange:/var/lib/monkeyocr-sandbox]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      kafka-init: {condition: service_completed_successfully}
+      storage-service: {condition: service_started}
+      logging-service: {condition: service_started}
+      sandbox: {condition: service_started}
+    restart: unless-stopped
+
+  worker:
+    image: ${BACKEND_IMAGE:-monkeyocr-backend:production}
+    container_name: monkeyocr-worker
+    command: ["python", "-m", "src.worker_main"]
+    env_file:
+      - ../../../../dotenv/production/.env.app
+      - ../../../../dotenv/production/.env.database
+      - ../../../../dotenv/production/.env.kafka
+      - ../../../../dotenv/production/.env.engine
+      - ../../../../dotenv/production/.env.auth
+    environment:
+      STORAGE_SERVICE_URL: http://127.0.0.1:${STORAGE_SERVICE_PORT:-13003}
+      STORAGE_SERVICE_TOKEN: ${STORAGE_SERVICE_TOKEN}
+      DOCUMENT_STORAGE_BUCKET: ${DOCUMENT_STORAGE_BUCKET:-monkeyocr-documents}
+      PRESIGNED_URL_TTL_SECONDS: ${PRESIGNED_URL_TTL_SECONDS:-900}
+      MULTIPART_PART_SIZE_BYTES: ${MULTIPART_PART_SIZE_BYTES:-8388608}
+      UPLOAD_SESSION_TTL_SECONDS: ${UPLOAD_SESSION_TTL_SECONDS:-3600}
+      MAX_DOCUMENT_PAGES: ${MAX_DOCUMENT_PAGES:-500}
+      MAX_IMAGE_PIXELS: ${MAX_IMAGE_PIXELS:-100000000}
+      PDF_RENDER_DPI: ${PDF_RENDER_DPI:-180}
+      LOGGING_SERVICE_URL: http://127.0.0.1:${LOGGING_SERVICE_PORT:-13004}
+      LOGGING_SERVICE_TOKEN: ${LOGGING_SERVICE_TOKEN}
+      LOGGING_SERVICE_NAME: ${LOGGING_SERVICE_NAME:-monkeyocr-backend}
+      LOGGING_SERVICE_TIMEOUT_SECONDS: ${LOGGING_SERVICE_TIMEOUT_SECONDS:-2}
+      OCR_ENGINE_URL: ${OCR_ENGINE_URL:-http://127.0.0.1:${HPS_API_PORT:-13005}}
+    network_mode: host
+    volumes: [monkeyocr_sandbox_exchange:/var/lib/monkeyocr-sandbox]
+    depends_on:
+      backend: {condition: service_started}
+      sandbox: {condition: service_started}
+    restart: unless-stopped
+
+  retention-cleanup:
+    image: ${BACKEND_IMAGE:-monkeyocr-backend:production}
+    container_name: monkeyocr-retention-cleanup
+    command: ["python", "-m", "src.retention_main"]
+    env_file:
+      - ../../../../dotenv/production/.env.app
+      - ../../../../dotenv/production/.env.database
+      - ../../../../dotenv/production/.env.engine
+      - ../../../../dotenv/production/.env.auth
+    environment:
+      STORAGE_SERVICE_URL: http://127.0.0.1:${STORAGE_SERVICE_PORT:-13003}
+      STORAGE_SERVICE_TOKEN: ${STORAGE_SERVICE_TOKEN}
+      DOCUMENT_STORAGE_BUCKET: ${DOCUMENT_STORAGE_BUCKET:-monkeyocr-documents}
+      PRESIGNED_URL_TTL_SECONDS: ${PRESIGNED_URL_TTL_SECONDS:-900}
+      LOGGING_SERVICE_URL: http://127.0.0.1:${LOGGING_SERVICE_PORT:-13004}
+      LOGGING_SERVICE_TOKEN: ${LOGGING_SERVICE_TOKEN}
+      LOGGING_SERVICE_TIMEOUT_SECONDS: ${LOGGING_SERVICE_TIMEOUT_SECONDS:-2}
+      OCR_ENGINE_URL: ${OCR_ENGINE_URL:-http://127.0.0.1:${HPS_API_PORT:-13005}}
+      KAFKA_BROKERS: ${KAFKA_BROKERS}
+    network_mode: host
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      storage-service: {condition: service_started}
+      logging-service: {condition: service_started}
+    restart: unless-stopped
+
+  gateway:
+    build:
+      context: ../../../../services
+      dockerfile: gateway/Dockerfile.production
+      args: *go-build-args
+    image: ${GATEWAY_IMAGE:-monkeyocr-gateway:production}
+    container_name: monkeyocr-gateway
+    env_file: [../../../../dotenv/production/.env.gateway, ../../../../dotenv/production/.env.cache, ../../../../dotenv/production/.env.logging]
+    environment:
+      GATEWAY_ADDR: 127.0.0.1:${GATEWAY_PORT:-13000}
+      GATEWAY_BACKEND_URL: http://127.0.0.1:${BACKEND_PORT:-13001}
+      LOGGING_SERVICE_URL: http://127.0.0.1:${LOGGING_SERVICE_PORT:-13004}
+    network_mode: host
+    depends_on:
+      backend: {condition: service_started}
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ../../../../../frontend
+      dockerfile: Dockerfile.production
+      args:
+        <<: *node-build-args
+        VITE_GATEWAY_BASE_URL: ${FRONTEND_GATEWAY_BASE_URL:-}
+        VITE_MAX_UPLOAD_BYTES: ${VITE_MAX_UPLOAD_BYTES:-104857600}
+        VITE_API_TIMEOUT_MS: ${VITE_API_TIMEOUT_MS:-30000}
+        VITE_UPLOAD_PART_SIZE_BYTES: ${VITE_UPLOAD_PART_SIZE_BYTES:-8388608}
+        VITE_SSE_RETRY_MS: ${VITE_SSE_RETRY_MS:-2000}
+        VITE_JOB_POLL_INTERVAL_MS: ${VITE_JOB_POLL_INTERVAL_MS:-5000}
+        VITE_ARTIFACT_REFRESH_MS: ${VITE_ARTIFACT_REFRESH_MS:-600000}
+    image: ${FRONTEND_IMAGE:-monkeyocr-frontend:production}
+    container_name: monkeyocr-frontend
+    environment:
+      FRONTEND_BIND_ADDRESS: 127.0.0.1
+      FRONTEND_PORT: ${FRONTEND_PORT:-13002}
+      GATEWAY_HOST: 127.0.0.1
+      GATEWAY_PORT: ${GATEWAY_PORT:-13000}
+    network_mode: host
+    restart: unless-stopped

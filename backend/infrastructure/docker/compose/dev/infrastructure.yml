@@ -1,0 +1,149 @@
+services:
+  postgres:
+    image: postgres:18
+    container_name: monkeyocr-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-monkeyocr}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-monkeyocr-dev-password}
+      POSTGRES_DB: ${POSTGRES_DB:-monkeyocr_db}
+    ports: ["${POSTGRES_HOST_PORT:-13006}:5432"]
+    volumes: ["monkeyocr_postgres_data:/var/lib/postgresql"]
+    networks: [monkeyocr-network]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-monkeyocr} -d ${POSTGRES_DB:-monkeyocr_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  kafka:
+    image: apache/kafka:4.2.0
+    container_name: monkeyocr-kafka
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,HOST://:13007
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,HOST://localhost:${KAFKA_HOST_PORT:-13007}
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,HOST:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+    ports: ["${KAFKA_HOST_PORT:-13007}:13007"]
+    volumes: ["monkeyocr_kafka_data:/var/lib/kafka/data"]
+    networks: [monkeyocr-network]
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 15
+      start_period: 20s
+
+  kafka-init:
+    image: apache/kafka:4.2.0
+    container_name: monkeyocr-kafka-init
+    command:
+      - sh
+      - -c
+      - >-
+        for topic in
+        ${OCR_JOB_TOPIC:-monkeyocr.events.jobs}
+        ${OCR_JOB_DLQ_TOPIC:-monkeyocr.events.jobs.dlq}
+        ${LOGGING_KAFKA_TOPIC:-monkeyocr.events.logging.v1}; do
+          /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists
+          --topic $$topic --partitions ${KAFKA_TOPIC_PARTITIONS:-3}
+          --replication-factor ${KAFKA_TOPIC_REPLICATION_FACTOR:-1} || exit 1;
+        done
+    networks: [monkeyocr-network]
+    depends_on:
+      kafka: {condition: service_healthy}
+    restart: "no"
+
+  redis:
+    image: redis:8.2-alpine
+    container_name: monkeyocr-redis
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:-monkeyocr-dev-password}"]
+    ports: ["${REDIS_HOST_PORT:-13008}:6379"]
+    volumes: ["monkeyocr_redis_data:/data"]
+    networks: [monkeyocr-network]
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-monkeyocr-dev-password}", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  minio:
+    image: minio/minio:RELEASE.2025-07-23T15-54-02Z
+    container_name: monkeyocr-minio
+    command: server /data --console-address :9001
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-monkeyocr}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-monkeyocr-dev-password}
+    ports:
+      - "${MINIO_API_PORT:-13009}:9000"
+      - "${MINIO_CONSOLE_PORT:-13010}:9001"
+    volumes: ["monkeyocr_minio_data:/data"]
+    networks: [monkeyocr-network]
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  minio-init:
+    image: minio/mc:RELEASE.2025-07-21T05-28-08Z
+    container_name: monkeyocr-minio-init
+    entrypoint:
+      - /bin/sh
+      - -c
+      - >-
+        mc alias set local http://minio:9000 ${MINIO_ROOT_USER:-monkeyocr} ${MINIO_ROOT_PASSWORD:-monkeyocr-dev-password}
+        && mc mb --ignore-existing local/${DOCUMENT_STORAGE_BUCKET:-monkeyocr-documents}
+        && sed "s|__MONKEYOCR_BROWSER_ORIGIN__|$${MONKEYOCR_BROWSER_ORIGIN}|g" /config/cors.xml > /tmp/cors.xml
+        && mc cors set local/${DOCUMENT_STORAGE_BUCKET:-monkeyocr-documents} /tmp/cors.xml
+        && mc anonymous set none local/${DOCUMENT_STORAGE_BUCKET:-monkeyocr-documents}
+    environment:
+      MONKEYOCR_BROWSER_ORIGIN: ${FRONTEND_PUBLIC_ORIGIN:-http://localhost:13002}
+    volumes:
+      - ../../../minio/cors.xml:/config/cors.xml:ro
+    networks: [monkeyocr-network]
+    depends_on:
+      minio: {condition: service_healthy}
+    restart: "no"
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.6
+    container_name: monkeyocr-clickhouse
+    environment:
+      CLICKHOUSE_DB: ${CLICKHOUSE_DATABASE:-monkeyocr_logging_db}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-monkeyocr_logging}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-monkeyocr-dev-password}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    ports:
+      - "${CLICKHOUSE_HTTP_PORT:-13011}:8123"
+      - "${CLICKHOUSE_NATIVE_PORT:-13012}:9000"
+    volumes: ["monkeyocr_clickhouse_data:/var/lib/clickhouse"]
+    networks: [monkeyocr-network]
+    healthcheck:
+      test: ["CMD-SHELL", "clickhouse-client --user ${CLICKHOUSE_USER:-monkeyocr_logging} --password ${CLICKHOUSE_PASSWORD:-monkeyocr-dev-password} --query 'SELECT 1'"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  clickhouse-migrate:
+    build:
+      context: ../../../..
+      dockerfile: infrastructure/clickhouse/Dockerfile.migrate
+    image: ${CLICKHOUSE_MIGRATE_IMAGE:-monkeyocr-clickhouse-migrate:dev}
+    container_name: monkeyocr-clickhouse-migrate
+    env_file: [../../../../dotenv/dev/.env.clickhouse]
+    environment:
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_NATIVE_PORT: 9000
+    networks: [monkeyocr-network]
+    depends_on:
+      clickhouse: {condition: service_healthy}
+    restart: "no"

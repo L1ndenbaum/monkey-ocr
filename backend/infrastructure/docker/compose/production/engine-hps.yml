@@ -1,0 +1,105 @@
+# PaddleOCR-VL HPS is the official three-container inference appliance. Unlike
+# project-owned production services, its Triton and vLLM members stay on a
+# private bridge because the upstream appliance assigns the same internal port
+# to two processes. The bridge permits outbound model downloads but publishes
+# no member except the loopback-only API at HPS_API_PORT.
+x-hps-build-args: &hps-build-args
+  HTTP_PROXY: ${BUILD_HTTP_PROXY:-}
+  HTTPS_PROXY: ${BUILD_HTTPS_PROXY:-}
+  NO_PROXY: ${BUILD_NO_PROXY:-}
+  http_proxy: ${BUILD_HTTP_PROXY:-}
+  https_proxy: ${BUILD_HTTPS_PROXY:-}
+  no_proxy: ${BUILD_NO_PROXY:-}
+  PIP_INDEX_URL: ${BUILD_PYPI_INDEX_URL:-https://pypi.org/simple}
+
+networks:
+  monkeyocr-hps:
+    name: monkeyocr-hps
+
+volumes:
+  monkeyocr_hps_model_cache:
+services:
+  paddleocr-vl-api:
+    profiles: [hps]
+    build:
+      context: ../../../../infrastructure/paddleocr-hps/runtime
+      dockerfile: gateway.Dockerfile
+      args:
+        <<: *hps-build-args
+        HPS_SDK_DIR: ${HPS_SDK_DIR:-paddlex_hps_PaddleOCR-VL-1.6_sdk}
+    image: ${HPS_API_IMAGE:-monkeyocr-paddleocr-vl-api:3.6-1.6}
+    container_name: monkeyocr-paddleocr-vl-api
+    ports: ["127.0.0.1:${HPS_API_PORT:-13005}:8080"]
+    environment:
+      HPS_TRITON_URL: paddleocr-vl-pipeline:8001
+      HPS_VLM_URL: http://paddleocr-vlm-server:8080
+      HPS_MAX_CONCURRENT_INFERENCE_REQUESTS: ${HPS_MAX_CONCURRENT_INFERENCE_REQUESTS:-8}
+      HPS_MAX_CONCURRENT_NON_INFERENCE_REQUESTS: ${HPS_MAX_CONCURRENT_NON_INFERENCE_REQUESTS:-32}
+      HPS_INFERENCE_TIMEOUT: ${HPS_INFERENCE_TIMEOUT:-600}
+      HPS_UVICORN_WORKERS: ${HPS_UVICORN_WORKERS:-2}
+    networks: [monkeyocr-hps]
+    depends_on:
+      paddleocr-vl-pipeline: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8080/health/ready\", timeout=5)' || exit 1"]
+      interval: 10s
+      timeout: 8s
+      retries: 30
+      start_period: 60s
+    restart: unless-stopped
+
+  paddleocr-vl-pipeline:
+    profiles: [hps]
+    build:
+      context: ../../../../infrastructure/paddleocr-hps/runtime
+      dockerfile: pipeline.Dockerfile
+      args:
+        <<: *hps-build-args
+        BASE_IMAGE: ${HPS_TRITON_BASE_IMAGE:-ccr-2vdh3abv-pub.cnc.bj.baidubce.com/paddlex/hps:paddlex3.6-gpu}
+        DEVICE_TYPE: gpu
+        HPS_SDK_DIR: ${HPS_SDK_DIR:-paddlex_hps_PaddleOCR-VL-1.6_sdk}
+    image: ${HPS_PIPELINE_IMAGE:-monkeyocr-paddleocr-vl-pipeline:3.6-1.6}
+    container_name: monkeyocr-paddleocr-vl-pipeline
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${HPS_DEVICE_ID:-0}"]
+              capabilities: [gpu]
+    shm_size: ${HPS_SHM_SIZE:-4gb}
+    networks: [monkeyocr-hps]
+    depends_on:
+      paddleocr-vlm-server: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/v2/health/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+    restart: unless-stopped
+
+  paddleocr-vlm-server:
+    profiles: [hps]
+    image: ${HPS_VLM_IMAGE:-ccr-2vdh3abv-pub.cnc.bj.baidubce.com/paddlepaddle/paddleocr-genai-vllm-server:latest-nvidia-gpu}
+    container_name: monkeyocr-paddleocr-vlm-server
+    volumes:
+      - ../../../../infrastructure/paddleocr-hps/runtime/${HPS_SDK_DIR:-paddlex_hps_PaddleOCR-VL-1.6_sdk}/server/pipeline_config.yaml:/config/pipeline_config.yaml:ro
+      - ../../../../infrastructure/paddleocr-hps/runtime/genai_server_entrypoint.sh:/entrypoint.sh:ro
+      - monkeyocr_hps_model_cache:/root/.cache
+    command: ["/bin/sh", "/entrypoint.sh"]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${HPS_DEVICE_ID:-0}"]
+              capabilities: [gpu]
+    networks: [monkeyocr-hps]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 300s
+    restart: unless-stopped

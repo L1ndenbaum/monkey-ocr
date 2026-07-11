@@ -1,0 +1,15 @@
+name: monkeyocr
+
+networks:
+  monkeyocr-network:
+    name: monkeyocr-network
+    driver: bridge
+
+volumes:
+  monkeyocr_postgres_data:
+  monkeyocr_kafka_data:
+  monkeyocr_redis_data:
+  monkeyocr_minio_data:
+  monkeyocr_clickhouse_data:
+  monkeyocr_logging_data:
+  monkeyocr_frontend_modules:

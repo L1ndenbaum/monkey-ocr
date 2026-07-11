@@ -1,0 +1,59 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - run: pip install -r backend/requirements.txt
+      - run: PYTHONPATH=backend pytest backend/tests
+
+  go-services:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend/services
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+          cache-dependency-path: backend/services/**/go.sum
+      - run: go test ./gateway/... ./lib-go/... ./logging-service/... ./storage-service/...
+      - run: go vet ./gateway/... ./lib-go/... ./logging-service/... ./storage-service/...
+      - run: python ../../backend/scripts/generate_internal_status_codes.py --check
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+
+  compose-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: backend/scripts/compose.sh dev init-env
+      - run: backend/scripts/compose.sh dev config --quiet
+      - run: backend/scripts/compose.sh production init-env
+      - run: MONKEYOCR_ENABLE_HPS=0 backend/scripts/compose.sh production config --quiet
+      - run: bash -n backend/scripts/compose.sh backend/scripts/prepare_hps.sh

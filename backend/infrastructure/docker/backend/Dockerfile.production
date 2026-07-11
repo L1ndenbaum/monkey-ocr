@@ -1,0 +1,26 @@
+FROM python:3.12-slim AS runtime
+
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG NO_PROXY
+ARG http_proxy
+ARG https_proxy
+ARG no_proxy
+ARG PIP_INDEX_URL=https://pypi.org/simple
+
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PYTHONPATH=/app
+WORKDIR /app
+
+RUN groupadd --system --gid 10001 monkeyocr \
+    && useradd --system --uid 10001 --gid monkeyocr --home-dir /app monkeyocr \
+    && install -d -o monkeyocr -g monkeyocr -m 0700 /var/lib/monkeyocr-sandbox \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends curl libmagic1 libgl1 libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt ./requirements.txt
+RUN --mount=type=cache,target=/root/.cache/pip pip install -r requirements.txt
+
+COPY --chown=monkeyocr:monkeyocr . .
+USER monkeyocr
+CMD ["sh", "-c", "exec uvicorn src.main:app --host \"${BACKEND_HOST:-127.0.0.1}\" --port \"${BACKEND_PORT:-13001}\" --workers \"${BACKEND_WORKERS:-2}\" --proxy-headers"]

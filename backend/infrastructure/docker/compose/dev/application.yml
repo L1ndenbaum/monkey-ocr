@@ -1,0 +1,222 @@
+x-python-build-args: &python-build-args
+  HTTP_PROXY: ${BUILD_HTTP_PROXY:-}
+  HTTPS_PROXY: ${BUILD_HTTPS_PROXY:-}
+  NO_PROXY: ${BUILD_NO_PROXY:-}
+  http_proxy: ${BUILD_HTTP_PROXY:-}
+  https_proxy: ${BUILD_HTTPS_PROXY:-}
+  no_proxy: ${BUILD_NO_PROXY:-}
+  PIP_INDEX_URL: ${BUILD_PYPI_INDEX_URL:-https://pypi.org/simple}
+
+x-go-build-args: &go-build-args
+  HTTP_PROXY: ${BUILD_HTTP_PROXY:-}
+  HTTPS_PROXY: ${BUILD_HTTPS_PROXY:-}
+  NO_PROXY: ${BUILD_NO_PROXY:-}
+  http_proxy: ${BUILD_HTTP_PROXY:-}
+  https_proxy: ${BUILD_HTTPS_PROXY:-}
+  no_proxy: ${BUILD_NO_PROXY:-}
+  GOPROXY: ${BUILD_GOPROXY:-https://proxy.golang.org,direct}
+  GOSUMDB: ${BUILD_GOSUMDB:-sum.golang.org}
+
+x-node-build-args: &node-build-args
+  HTTP_PROXY: ${BUILD_HTTP_PROXY:-}
+  HTTPS_PROXY: ${BUILD_HTTPS_PROXY:-}
+  NO_PROXY: ${BUILD_NO_PROXY:-}
+  http_proxy: ${BUILD_HTTP_PROXY:-}
+  https_proxy: ${BUILD_HTTPS_PROXY:-}
+  no_proxy: ${BUILD_NO_PROXY:-}
+
+services:
+  migrate:
+    build:
+      context: ../../../..
+      dockerfile: infrastructure/docker/backend/Dockerfile.dev
+      args: *python-build-args
+    image: ${BACKEND_IMAGE:-monkeyocr-backend:dev}
+    command: ["alembic", "-c", "alembic.ini", "upgrade", "head"]
+    env_file: [../../../../dotenv/dev/.env.database]
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-monkeyocr}:${POSTGRES_PASSWORD:-monkeyocr-dev-password}@postgres:5432/${POSTGRES_DB:-monkeyocr_db}
+    networks: [monkeyocr-network]
+    depends_on:
+      postgres: {condition: service_healthy}
+    restart: "no"
+
+  storage-service:
+    build:
+      context: ../../../../services
+      dockerfile: storage-service/Dockerfile.dev
+      args: *go-build-args
+    image: ${STORAGE_SERVICE_IMAGE:-monkeyocr-storage-service:dev}
+    container_name: monkeyocr-storage-service
+    env_file: [../../../../dotenv/dev/.env.storage]
+    environment:
+      STORAGE_SERVICE_ADDR: :${STORAGE_SERVICE_PORT:-13003}
+      MINIO_INTERNAL_ENDPOINT: http://minio:9000
+      MINIO_PUBLIC_ENDPOINT: http://localhost:${MINIO_API_PORT:-13009}
+    ports: ["${STORAGE_SERVICE_PORT:-13003}:${STORAGE_SERVICE_PORT:-13003}"]
+    networks: [monkeyocr-network]
+    depends_on:
+      minio-init: {condition: service_completed_successfully}
+
+  logging-service:
+    build:
+      context: ../../../../services
+      dockerfile: logging-service/Dockerfile.dev
+      args: *go-build-args
+    image: ${LOGGING_SERVICE_IMAGE:-monkeyocr-logging-service:dev}
+    container_name: monkeyocr-logging-service
+    command: ["monkeyocr-logging-service"]
+    env_file: [../../../../dotenv/dev/.env.logging]
+    environment:
+      LOGGING_SERVICE_ADDR: :${LOGGING_SERVICE_PORT:-13004}
+      LOGGING_KAFKA_BROKERS: kafka:9092
+    ports: ["${LOGGING_SERVICE_PORT:-13004}:${LOGGING_SERVICE_PORT:-13004}"]
+    volumes: ["monkeyocr_logging_data:/var/lib/logging-service"]
+    networks: [monkeyocr-network]
+    depends_on:
+      kafka-init: {condition: service_completed_successfully}
+
+  clickhouse-writer:
+    image: ${LOGGING_SERVICE_IMAGE:-monkeyocr-logging-service:dev}
+    command: ["monkeyocr-clickhouse-writer"]
+    env_file: [../../../../dotenv/dev/.env.logging, ../../../../dotenv/dev/.env.clickhouse]
+    environment:
+      LOGGING_KAFKA_BROKERS: kafka:9092
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_HTTP_URL: http://clickhouse:8123
+    networks: [monkeyocr-network]
+    depends_on:
+      clickhouse-migrate: {condition: service_completed_successfully}
+      kafka-init: {condition: service_completed_successfully}
+
+  backend:
+    build:
+      context: ../../../..
+      dockerfile: infrastructure/docker/backend/Dockerfile.dev
+      args: *python-build-args
+    image: ${BACKEND_IMAGE:-monkeyocr-backend:dev}
+    container_name: monkeyocr-backend
+    env_file:
+      - ../../../../dotenv/dev/.env.app
+      - ../../../../dotenv/dev/.env.database
+      - ../../../../dotenv/dev/.env.kafka
+      - ../../../../dotenv/dev/.env.engine
+      - ../../../../dotenv/dev/.env.auth
+    environment:
+      BACKEND_PORT: ${BACKEND_PORT:-13001}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-monkeyocr}:${POSTGRES_PASSWORD:-monkeyocr-dev-password}@postgres:5432/${POSTGRES_DB:-monkeyocr_db}
+      KAFKA_BROKERS: kafka:9092
+      REDIS_URL: redis://:${REDIS_PASSWORD:-monkeyocr-dev-password}@redis:6379/0
+      STORAGE_SERVICE_URL: http://storage-service:${STORAGE_SERVICE_PORT:-13003}
+      STORAGE_SERVICE_TOKEN: ${STORAGE_SERVICE_TOKEN:-monkeyocr-dev-storage-token}
+      DOCUMENT_STORAGE_BUCKET: ${DOCUMENT_STORAGE_BUCKET:-monkeyocr-documents}
+      PRESIGNED_URL_TTL_SECONDS: ${PRESIGNED_URL_TTL_SECONDS:-900}
+      MULTIPART_PART_SIZE_BYTES: ${MULTIPART_PART_SIZE_BYTES:-8388608}
+      UPLOAD_SESSION_TTL_SECONDS: ${UPLOAD_SESSION_TTL_SECONDS:-3600}
+      MAX_DOCUMENT_PAGES: ${MAX_DOCUMENT_PAGES:-500}
+      MAX_IMAGE_PIXELS: ${MAX_IMAGE_PIXELS:-100000000}
+      PDF_RENDER_DPI: ${PDF_RENDER_DPI:-180}
+      LOGGING_SERVICE_URL: http://logging-service:${LOGGING_SERVICE_PORT:-13004}
+      LOGGING_SERVICE_TOKEN: ${LOGGING_SERVICE_TOKEN:-monkeyocr-dev-logging-token}
+      LOGGING_SERVICE_NAME: ${LOGGING_SERVICE_NAME:-monkeyocr-backend}
+      LOGGING_SERVICE_TIMEOUT_SECONDS: ${LOGGING_SERVICE_TIMEOUT_SECONDS:-2}
+    ports: ["${BACKEND_PORT:-13001}:${BACKEND_PORT:-13001}"]
+    networks: [monkeyocr-network]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      kafka-init: {condition: service_completed_successfully}
+      storage-service: {condition: service_started}
+
+  worker:
+    image: ${BACKEND_IMAGE:-monkeyocr-backend:dev}
+    container_name: monkeyocr-worker
+    command: ["python", "-m", "src.worker_main"]
+    env_file:
+      - ../../../../dotenv/dev/.env.app
+      - ../../../../dotenv/dev/.env.database
+      - ../../../../dotenv/dev/.env.kafka
+      - ../../../../dotenv/dev/.env.engine
+      - ../../../../dotenv/dev/.env.auth
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-monkeyocr}:${POSTGRES_PASSWORD:-monkeyocr-dev-password}@postgres:5432/${POSTGRES_DB:-monkeyocr_db}
+      KAFKA_BROKERS: kafka:9092
+      STORAGE_SERVICE_URL: http://storage-service:${STORAGE_SERVICE_PORT:-13003}
+      STORAGE_SERVICE_TOKEN: ${STORAGE_SERVICE_TOKEN:-monkeyocr-dev-storage-token}
+      DOCUMENT_STORAGE_BUCKET: ${DOCUMENT_STORAGE_BUCKET:-monkeyocr-documents}
+      PRESIGNED_URL_TTL_SECONDS: ${PRESIGNED_URL_TTL_SECONDS:-900}
+      MULTIPART_PART_SIZE_BYTES: ${MULTIPART_PART_SIZE_BYTES:-8388608}
+      UPLOAD_SESSION_TTL_SECONDS: ${UPLOAD_SESSION_TTL_SECONDS:-3600}
+      MAX_DOCUMENT_PAGES: ${MAX_DOCUMENT_PAGES:-500}
+      MAX_IMAGE_PIXELS: ${MAX_IMAGE_PIXELS:-100000000}
+      PDF_RENDER_DPI: ${PDF_RENDER_DPI:-180}
+      LOGGING_SERVICE_URL: http://logging-service:${LOGGING_SERVICE_PORT:-13004}
+      LOGGING_SERVICE_TOKEN: ${LOGGING_SERVICE_TOKEN:-monkeyocr-dev-logging-token}
+      LOGGING_SERVICE_NAME: ${LOGGING_SERVICE_NAME:-monkeyocr-backend}
+      LOGGING_SERVICE_TIMEOUT_SECONDS: ${LOGGING_SERVICE_TIMEOUT_SECONDS:-2}
+    networks: [monkeyocr-network]
+    depends_on:
+      backend: {condition: service_started}
+
+  retention-cleanup:
+    image: ${BACKEND_IMAGE:-monkeyocr-backend:dev}
+    container_name: monkeyocr-retention-cleanup
+    command: ["python", "-m", "src.retention_main"]
+    env_file:
+      - ../../../../dotenv/dev/.env.app
+      - ../../../../dotenv/dev/.env.database
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-monkeyocr}:${POSTGRES_PASSWORD:-monkeyocr-dev-password}@postgres:5432/${POSTGRES_DB:-monkeyocr_db}
+      STORAGE_SERVICE_URL: http://storage-service:${STORAGE_SERVICE_PORT:-13003}
+      STORAGE_SERVICE_TOKEN: ${STORAGE_SERVICE_TOKEN:-monkeyocr-dev-storage-token}
+      DOCUMENT_STORAGE_BUCKET: ${DOCUMENT_STORAGE_BUCKET:-monkeyocr-documents}
+      PRESIGNED_URL_TTL_SECONDS: ${PRESIGNED_URL_TTL_SECONDS:-900}
+      LOGGING_SERVICE_URL: http://logging-service:${LOGGING_SERVICE_PORT:-13004}
+      LOGGING_SERVICE_TOKEN: ${LOGGING_SERVICE_TOKEN:-monkeyocr-dev-logging-token}
+      LOGGING_SERVICE_TIMEOUT_SECONDS: ${LOGGING_SERVICE_TIMEOUT_SECONDS:-2}
+    networks: [monkeyocr-network]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      storage-service: {condition: service_started}
+      logging-service: {condition: service_started}
+    restart: unless-stopped
+
+  gateway:
+    build:
+      context: ../../../../services
+      dockerfile: gateway/Dockerfile.dev
+      args: *go-build-args
+    image: ${GATEWAY_IMAGE:-monkeyocr-gateway:dev}
+    container_name: monkeyocr-gateway
+    env_file: [../../../../dotenv/dev/.env.gateway, ../../../../dotenv/dev/.env.logging]
+    environment:
+      GATEWAY_ADDR: :${GATEWAY_PORT:-13000}
+      GATEWAY_BACKEND_URL: http://backend:${BACKEND_PORT:-13001}
+      REDIS_URL: redis://:${REDIS_PASSWORD:-monkeyocr-dev-password}@redis:6379/0
+      LOGGING_SERVICE_URL: http://logging-service:${LOGGING_SERVICE_PORT:-13004}
+    ports: ["${GATEWAY_PORT:-13000}:${GATEWAY_PORT:-13000}"]
+    networks: [monkeyocr-network]
+    depends_on:
+      backend: {condition: service_started}
+      redis: {condition: service_healthy}
+
+  frontend:
+    build:
+      context: ../../../../../frontend
+      dockerfile: Dockerfile.dev
+      args: *node-build-args
+    image: ${FRONTEND_IMAGE:-monkeyocr-frontend:dev}
+    container_name: monkeyocr-frontend
+    environment:
+      VITE_GATEWAY_BASE_URL: ${FRONTEND_GATEWAY_BASE_URL:-http://localhost:13000}
+      VITE_FRONTEND_PORT: ${FRONTEND_PORT:-13002}
+      VITE_MAX_UPLOAD_BYTES: ${VITE_MAX_UPLOAD_BYTES:-104857600}
+      VITE_API_TIMEOUT_MS: ${VITE_API_TIMEOUT_MS:-30000}
+      VITE_UPLOAD_PART_SIZE_BYTES: ${VITE_UPLOAD_PART_SIZE_BYTES:-8388608}
+      VITE_SSE_RETRY_MS: ${VITE_SSE_RETRY_MS:-2000}
+      VITE_JOB_POLL_INTERVAL_MS: ${VITE_JOB_POLL_INTERVAL_MS:-5000}
+      VITE_ARTIFACT_REFRESH_MS: ${VITE_ARTIFACT_REFRESH_MS:-600000}
+    ports: ["${FRONTEND_PORT:-13002}:${FRONTEND_PORT:-13002}"]
+    volumes:
+      - ../../../../../frontend:/app
+      - monkeyocr_frontend_modules:/app/node_modules
+    networks: [monkeyocr-network]

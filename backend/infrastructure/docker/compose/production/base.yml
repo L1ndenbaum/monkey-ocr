@@ -1,0 +1,7 @@
+name: monkeyocr
+
+services: {}
+
+volumes:
+  monkeyocr_sandbox_exchange:
+  monkeyocr_logging_data:
