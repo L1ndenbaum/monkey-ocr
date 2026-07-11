@@ -1,0 +1,7 @@
+FROM migrate/migrate:v4.17.1 AS migrate
+FROM clickhouse/clickhouse-server:25.6
+COPY --from=migrate /usr/local/bin/migrate /usr/local/bin/migrate
+COPY bootstrap.sh /usr/local/bin/clickhouse-bootstrap
+COPY migrations /migrations
+RUN chmod +x /usr/local/bin/clickhouse-bootstrap
+ENTRYPOINT ["/usr/local/bin/clickhouse-bootstrap"]

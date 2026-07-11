@@ -1,0 +1,41 @@
+FROM golang:1.22-alpine AS builder
+
+WORKDIR /src
+
+# 构建阶段代理和 Go module proxy 配置。仅 builder 阶段可见，不进入最终运行镜像。
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG NO_PROXY
+ARG http_proxy
+ARG https_proxy
+ARG no_proxy
+ARG GOPROXY=https://proxy.golang.org,direct
+ARG GOSUMDB=sum.golang.org
+ARG GONOPROXY
+ARG GONOSUMDB
+
+ENV GOPROXY=${GOPROXY} \
+    GOSUMDB=${GOSUMDB} \
+    GONOPROXY=${GONOPROXY} \
+    GONOSUMDB=${GONOSUMDB}
+
+COPY lib-go/go.mod lib-go/go.sum ./lib-go/
+COPY storage-service/go.mod storage-service/go.sum ./storage-service/
+WORKDIR /src/storage-service
+# BuildKit cache mounts keep module downloads reusable across source-only rebuilds.
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download
+WORKDIR /src
+COPY lib-go ./lib-go
+COPY storage-service ./storage-service
+WORKDIR /src/storage-service
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+	CGO_ENABLED=0 GOOS=linux go build -o /out/monkeyocr-storage-service ./cmd
+
+FROM alpine:3.20
+RUN adduser -D -H -u 10001 appuser
+USER appuser
+COPY --from=builder /out/monkeyocr-storage-service /usr/local/bin/monkeyocr-storage-service
+EXPOSE 13003
+ENTRYPOINT ["monkeyocr-storage-service"]
