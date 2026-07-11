@@ -21,4 +21,3 @@ class BusinessError(Exception):
         self.message = message
         self.error_reason = error_reason
         self.data = data
-

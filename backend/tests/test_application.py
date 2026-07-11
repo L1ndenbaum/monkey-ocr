@@ -83,4 +83,3 @@ async def test_queued_job_cancels_immediately() -> None:
         job.job_id, owner_id="owner", request_id="cancel"
     )
     assert cancelled.status == JobState.CANCELLED
-

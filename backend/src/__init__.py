@@ -1,2 +1,1 @@
 """MonkeyOCR backend package."""
-

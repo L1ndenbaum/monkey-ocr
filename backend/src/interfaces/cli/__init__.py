@@ -1,2 +1,1 @@
 """Administrator command-line interfaces."""
-

@@ -18,4 +18,3 @@ def test_generated_api_key_is_one_way_and_prefix_is_lookup_safe() -> None:
         pepper="wrong",
         digest=generated.digest,
     )
-

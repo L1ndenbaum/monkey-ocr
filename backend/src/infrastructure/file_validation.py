@@ -62,4 +62,3 @@ class MagicBytesFileValidator:
             if data.startswith(signature):
                 return content_type
         return None
-
