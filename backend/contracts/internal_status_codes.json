@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "success": {"name": "SUCCESS", "value": 0, "message": "操作成功"},
+  "statuses": [
+    {"name": "COMMON_INVALID_ARGUMENT", "value": 10001, "message": "请求参数无效"},
+    {"name": "COMMON_RESOURCE_NOT_FOUND", "value": 10002, "message": "资源不存在"},
+    {"name": "COMMON_STATE_CONFLICT", "value": 10003, "message": "资源状态冲突"},
+    {"name": "COMMON_IDEMPOTENCY_CONFLICT", "value": 10004, "message": "幂等请求冲突"},
+    {"name": "UPLOAD_NOT_FOUND", "value": 20001, "message": "上传会话不存在"},
+    {"name": "UPLOAD_NOT_COMPLETED", "value": 20002, "message": "上传尚未完成"},
+    {"name": "UPLOAD_HASH_MISMATCH", "value": 20003, "message": "文件哈希不匹配"},
+    {"name": "UPLOAD_UNSUPPORTED_FILE_TYPE", "value": 20004, "message": "不支持的文件类型"},
+    {"name": "UPLOAD_FILE_TOO_LARGE", "value": 20005, "message": "文件过大"},
+    {"name": "UPLOAD_SECURITY_REJECTED", "value": 20006, "message": "文件安全校验未通过"},
+    {"name": "JOB_NOT_FOUND", "value": 30001, "message": "任务不存在"},
+    {"name": "JOB_NOT_CANCELLABLE", "value": 30002, "message": "当前任务不可取消"},
+    {"name": "JOB_NOT_RETRYABLE", "value": 30003, "message": "当前任务不可重试"},
+    {"name": "JOB_PROCESSING_FAILED", "value": 30004, "message": "任务处理失败"},
+    {"name": "JOB_RESULT_NOT_READY", "value": 30005, "message": "任务结果尚未生成"},
+    {"name": "USER_UNAUTHORIZED", "value": 40001, "message": "API Key 无效或缺失"},
+    {"name": "API_KEY_REVOKED", "value": 40002, "message": "API Key 已吊销"},
+    {"name": "API_KEY_RATE_LIMITED", "value": 40003, "message": "请求过于频繁"},
+    {"name": "ENGINE_UNAVAILABLE", "value": 50001, "message": "OCR 引擎不可用"},
+    {"name": "ENGINE_TIMEOUT", "value": 50002, "message": "OCR 引擎响应超时"},
+    {"name": "STORAGE_UNAVAILABLE", "value": 50003, "message": "对象存储不可用"},
+    {"name": "QUEUE_UNAVAILABLE", "value": 50004, "message": "消息队列不可用"},
+    {"name": "DATABASE_UNAVAILABLE", "value": 50005, "message": "数据库不可用"},
+    {"name": "INTERNAL_CONTROLLED_ERROR", "value": 59999, "message": "服务暂时不可用"},
+    {"name": "TRANSPORT_INTERNAL_ERROR", "value": 90000, "message": "服务内部传输错误"},
+    {"name": "TRANSPORT_BAD_GATEWAY", "value": 90002, "message": "上游服务不可用"},
+    {"name": "TRANSPORT_GATEWAY_TIMEOUT", "value": 90004, "message": "上游服务响应超时"}
+  ]
+}

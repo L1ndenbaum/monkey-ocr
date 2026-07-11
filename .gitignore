@@ -44,13 +44,6 @@ ENV/
 ehthumbs.db
 Thumbs.db
 
-# Project specific
-uploads/*
-!uploads/.gitkeep
-processed/*
-!processed/.gitkeep
-docling_models/*
-
 # Logs
 *.log
 logs/
@@ -65,15 +58,22 @@ logs/
 *.tmp
 *.temp
 
-# Model cache directory (symlink, will be recreated)
-docling_cache/
+# Tests are source and must stay tracked. Only their generated caches are ignored.
+.coverage
+htmlcov/
 
-# Note: docling_models/ is included in the repository for offline usage
+# Frontend generated files
+frontend/node_modules/
+frontend/dist/
+frontend/coverage/
 
-# Test files
-test_*.py
-*_test.py
-tests/
+# Backend runtime and generated HPS assets
+backend/dotenv/dev/.env.*
+backend/dotenv/production/.env.*
+!backend/dotenv/dev/.env.*.example
+!backend/dotenv/production/.env.*.example
+backend/infrastructure/paddleocr-hps/source/
+backend/infrastructure/paddleocr-hps/runtime/
 
 # Proxy configuration (clash)
 clash-for-linux-master/
